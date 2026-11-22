@@ -8,7 +8,7 @@
 
 namespace io
 {
-Camera::Camera(const std::string & config_path)
+Camera::Camera(const std::string & config_path, CameraFramePolicy policy)
 {
   auto yaml = tools::load(config_path);
   auto camera_name = tools::read<std::string>(yaml, "camera_name");
@@ -17,13 +17,13 @@ Camera::Camera(const std::string & config_path)
   if (camera_name == "mindvision") {
     auto gamma = tools::read<double>(yaml, "gamma");
     auto vid_pid = tools::read<std::string>(yaml, "vid_pid");
-    camera_ = std::make_unique<MindVision>(exposure_ms, gamma, vid_pid);
+    camera_ = std::make_unique<MindVision>(exposure_ms, gamma, vid_pid, policy);
   }
 
   else if (camera_name == "hikrobot") {
     auto gain = tools::read<double>(yaml, "gain");
     auto vid_pid = tools::read<std::string>(yaml, "vid_pid");
-    camera_ = std::make_unique<HikRobot>(exposure_ms, gain, vid_pid);
+    camera_ = std::make_unique<HikRobot>(exposure_ms, gain, vid_pid, policy);
   }
 
   else {

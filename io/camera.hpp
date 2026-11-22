@@ -8,6 +8,8 @@
 
 namespace io
 {
+enum class CameraFramePolicy { keep_queued, keep_latest };
+
 class CameraBase
 {
 public:
@@ -18,7 +20,7 @@ public:
 class Camera
 {
 public:
-  Camera(const std::string & config_path);
+  Camera(const std::string & config_path, CameraFramePolicy policy = CameraFramePolicy::keep_queued);
   void read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp);
 
 private:

@@ -14,7 +14,8 @@ namespace io
 class MindVision : public CameraBase
 {
 public:
-  MindVision(double exposure_ms, double gamma, const std::string & vid_pid);
+  MindVision(double exposure_ms, double gamma, const std::string & vid_pid,
+    CameraFramePolicy policy = CameraFramePolicy::keep_queued);
   ~MindVision() override;
   void read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp) override;
 
@@ -26,6 +27,7 @@ private:
   };
 
   double exposure_ms_, gamma_;
+  const bool replace_oldest_;
   CameraHandle handle_;
   int height_, width_;
   bool quit_, ok_;

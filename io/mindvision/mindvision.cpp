@@ -10,9 +10,11 @@ using namespace std::chrono_literals;
 
 namespace io
 {
-MindVision::MindVision(double exposure_ms, double gamma, const std::string & vid_pid)
+MindVision::MindVision(
+  double exposure_ms, double gamma, const std::string & vid_pid, CameraFramePolicy policy)
 : exposure_ms_(exposure_ms),
   gamma_(gamma),
+  replace_oldest_(policy == CameraFramePolicy::keep_latest),
   handle_(-1),
   quit_(false),
   ok_(false),
@@ -108,7 +110,7 @@ void MindVision::open()
       CameraImageProcess(handle_, raw, img.data, &head);
       CameraReleaseImageBuffer(handle_, raw);
 
-      queue_.push({img, timestamp});
+      queue_.push({img, timestamp}, replace_oldest_);
     }
   }};
 

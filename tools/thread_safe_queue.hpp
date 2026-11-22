@@ -19,20 +19,20 @@ public:
   {
   }
 
-  void push(const T & value)
+  void push(const T & value) { push(value, PopWhenFull); }
+
+  void push(const T & value, bool replace_oldest)
   {
     std::unique_lock<std::mutex> lock(mutex_);
 
-    if (queue_.size() >= max_size_) {
-      if (PopWhenFull) {
-        queue_.pop();
-      } else {
-        full_handler_();
-        return;
-      }
+    const bool full = queue_.size() >= max_size_;
+    if (full && (!replace_oldest || queue_.empty())) {
+      full_handler_();
+      return;
     }
 
     queue_.push(value);
+    if (full) queue_.pop();
     not_empty_condition_.notify_all();
   }
 

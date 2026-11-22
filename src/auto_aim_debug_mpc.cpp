@@ -278,7 +278,8 @@ public:
   }
 
   std::vector<std::optional<cv::Point>> pixels(
-    const std::vector<Eigen::Vector3d> & world, const Eigen::Matrix3d & gimbal2world) const
+    const std::vector<Eigen::Vector3d> & world, const Eigen::Matrix3d & gimbal2world,
+    const cv::Point2d & display_scale) const
   {
     std::vector<std::optional<cv::Point>> result(world.size());
     std::vector<cv::Point3d> camera_points;
@@ -298,7 +299,7 @@ public:
       const auto & p = image_points[i];
       if (std::isfinite(p.x) && std::isfinite(p.y) &&
           std::abs(p.x) < 1e6 && std::abs(p.y) < 1e6)
-        result[indices[i]] = cv::Point(cvRound(p.x), cvRound(p.y));
+        result[indices[i]] = cv::Point(cvRound(p.x * display_scale.x), cvRound(p.y * display_scale.y));
     }
     return result;
   }
@@ -320,28 +321,33 @@ void draw_path(cv::Mat & image, const std::vector<std::optional<cv::Point>> & po
 }
 
 void draw_polygon(cv::Mat & image, const std::vector<cv::Point2f> & points,
-                  const cv::Scalar & color)
+                  const cv::Scalar & color, const cv::Point2d & display_scale)
 {
   if (points.empty()) return;
   std::vector<std::optional<cv::Point>> polygon;
+  polygon.reserve(points.size() + 1);
   for (const auto & p : points) {
     if (!std::isfinite(p.x) || !std::isfinite(p.y) ||
         std::abs(p.x) > 1e6 || std::abs(p.y) > 1e6) return;
-    polygon.emplace_back(cv::Point(cvRound(p.x), cvRound(p.y)));
+    polygon.emplace_back(cv::Point(cvRound(p.x * display_scale.x), cvRound(p.y * display_scale.y)));
   }
   polygon.push_back(polygon.front());
   draw_path(image, polygon, color);
 }
 
 void draw_camera(
-  cv::Mat & image, const std::list<auto_aim::Armor> & detections,
+  cv::Mat & image, const cv::Size & source_size, const std::list<auto_aim::Armor> & detections,
   const std::optional<auto_aim::Target> & target, auto_aim::Solver & solver,
   const Projection & projection, const PlanView & view, bool pose_valid)
 {
+  const cv::Point2d display_scale(
+    static_cast<double>(image.cols) / source_size.width,
+    static_cast<double>(image.rows) / source_size.height);
   for (const auto & armor : detections) {
-    draw_polygon(image, armor.points, detection_color);
-    const cv::Point origin(std::clamp(cvRound(armor.center.x), 0, image.cols - 1),
-      std::clamp(cvRound(armor.center.y), 18, image.rows - 1));
+    draw_polygon(image, armor.points, detection_color, display_scale);
+    const cv::Point origin(
+      std::clamp(cvRound(armor.center.x * display_scale.x), 0, image.cols - 1),
+      std::clamp(cvRound(armor.center.y * display_scale.y), std::min(18, image.rows - 1), image.rows - 1));
     text(image, fmt::format("{} {} {:.2f}", auto_aim::COLORS.at(armor.color),
       auto_aim::ARMOR_NAMES.at(armor.name), armor.confidence), origin.x, origin.y,
       detection_color, 0.6);
@@ -349,10 +355,10 @@ void draw_camera(
   if (!pose_valid || !target) return;
   const Eigen::Matrix3d rotation = solver.R_gimbal2world();
   for (const auto & xyza : target->armor_xyza_list()) {
-    if (!projection.pixels({xyza.head<3>()}, rotation).front()) continue;
+    if (!projection.pixels({xyza.head<3>()}, rotation, display_scale).front()) continue;
     draw_polygon(image,
       solver.reproject_armor(xyza.head<3>(), xyza[3], target->armor_type, target->name),
-      tracked_color);
+      tracked_color, display_scale);
   }
   if (!view.trace || !view.plan.control) return;
   const auto & trace = *view.trace;
@@ -363,15 +369,16 @@ void draw_camera(
     command_path.push_back(
       from_ypr(trace.solution(0, i), trace.solution(2, i)) * Eigen::Vector3d::UnitX() * distance);
   }
-  draw_path(image, projection.pixels(aim_path, rotation), reference_color);
-  draw_path(image, projection.pixels(command_path, rotation), command_color, 3);
-  const auto aim = projection.pixels({trace.aim_xyza[auto_aim::HALF_HORIZON].head<3>()}, rotation);
+  draw_path(image, projection.pixels(aim_path, rotation, display_scale), reference_color);
+  draw_path(image, projection.pixels(command_path, rotation, display_scale), command_color, 3);
+  const auto aim = projection.pixels(
+    {trace.aim_xyza[auto_aim::HALF_HORIZON].head<3>()}, rotation, display_scale);
   if (aim.front() && cv::Rect(0, 0, image.cols, image.rows).contains(*aim.front()))
     cv::drawMarker(image, *aim.front(), reference_color, cv::MARKER_DIAMOND, 22, 2);
   const Eigen::Vector3d current = rotation * Eigen::Vector3d::UnitX() * distance;
   const Eigen::Vector3d command =
     from_ypr(view.plan.yaw, view.plan.pitch) * Eigen::Vector3d::UnitX() * distance;
-  const auto direction = projection.pixels({current, command}, rotation);
+  const auto direction = projection.pixels({current, command}, rotation, display_scale);
   if (direction[0] && direction[1]) {
     auto a = *direction[0], b = *direction[1];
     if (cv::clipLine(image.size(), a, b))
@@ -470,7 +477,8 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
   tools::Exiter exiter;
   // Only the opt-in planning worker can send; no IMU forwarding or navigation callbacks.
   io::Gimbal gimbal(config_path);
-  io::Camera camera(config_path);
+  io::Camera camera(config_path, enable_control
+    ? io::CameraFramePolicy::keep_queued : io::CameraFramePolicy::keep_latest);
   auto_aim::YOLO yolo(config_path, false);
   yolo.set_timing_enabled(detect_timing);
   DetectionTimingPanel timing_panel(detect_timing);
@@ -486,6 +494,10 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
   const std::string window = enable_control ? "Auto aim MPC - FOLLOW / NO FIRE" : "Auto aim MPC - RX ONLY";
   cv::namedWindow(window, cv::WINDOW_NORMAL);
   cv::resizeWindow(window, 1280, 800);
+  const cv::Size canvas_size(1600, 1000);
+  const cv::Scalar canvas_background(24, 25, 30);
+  cv::Mat preview_canvas;
+  if (!enable_control) preview_canvas.create(canvas_size, CV_8UC3);
   cv::Mat image;
   Clock::time_point image_time;
   int frame_count = 0;
@@ -498,6 +510,7 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
 
   while (!exiter.exit()) {
     camera.read(image, image_time);
+    const auto frame_read = Clock::now();
     if (image.empty()) continue;
     const auto image_q = gimbal.try_q(image_time);
     const auto feedback = gimbal.feedback();
@@ -548,25 +561,34 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
     if (view.plan.control && view.trace)
       command_q = from_ypr(view.plan.yaw, view.plan.pitch);
 
-    cv::Mat drawing = image.clone();
-    draw_camera(drawing, detections, target, solver, projection, view, pose_valid);
-    cv::Mat canvas(1000, 1600, CV_8UC3, cv::Scalar(24, 25, 30));
+    cv::Mat canvas = enable_control ? cv::Mat(canvas_size, CV_8UC3) : preview_canvas;
+    canvas.setTo(canvas_background);
     text(canvas, fmt::format("AUTO AIM: CAMERA -> DETECTION -> TRACKER -> MPC | {} | q / Esc exit",
       enable_control ? "FOLLOW / FIRE OFF" : "RX ONLY"),
       16, 29, command_color, 0.65);
-    const double scale = std::min(960.0 / drawing.cols, 720.0 / drawing.rows);
-    cv::Mat preview;
-    cv::resize(drawing, preview, {}, scale, scale, cv::INTER_AREA);
-    preview.copyTo(canvas(cv::Rect(10 + (960 - preview.cols) / 2,
-      48 + (720 - preview.rows) / 2, preview.cols, preview.rows)));
+    const double scale = std::min(960.0 / image.cols, 720.0 / image.rows);
+    const cv::Size preview_size(
+      std::max(1, cvRound(image.cols * scale)), std::max(1, cvRound(image.rows * scale)));
+    const cv::Rect preview_area(10 + (960 - preview_size.width) / 2,
+      48 + (720 - preview_size.height) / 2, preview_size.width, preview_size.height);
+    cv::Mat preview = canvas(preview_area);
+    cv::Mat drawing = enable_control ? image.clone() : preview;
+    if (!enable_control) cv::resize(image, drawing, preview_size, 0, 0, cv::INTER_LINEAR);
+    draw_camera(drawing, image.size(), detections, target, solver, projection, view, pose_valid);
+    if (enable_control) {
+      cv::Mat resized;
+      cv::resize(drawing, resized, preview_size, 0, 0, cv::INTER_AREA);
+      resized.copyTo(preview);
+    }
     const auto now = Clock::now();
     const double frame_seconds = std::chrono::duration<double>(now - previous_frame).count();
     previous_frame = now;
     const double detection_ms = std::chrono::duration<double, std::milli>(tracking_start - detection_start).count();
     const double tracker_ms = std::chrono::duration<double, std::milli>(tracking_finish - tracking_start).count();
     const double image_age = std::chrono::duration<double, std::milli>(now - image_time).count();
-    text(canvas, fmt::format("{:.1f} FPS | detect {:.1f} ms | track {:.1f} ms | image age {:.1f} ms",
-      frame_seconds > 0 ? 1 / frame_seconds : 0, detection_ms, tracker_ms, image_age), 22, 73,
+    const double read_age = std::chrono::duration<double, std::milli>(frame_read - image_time).count();
+    text(canvas, fmt::format("{:.1f} FPS | detect {:.1f} ms | track {:.1f} ms | read age {:.1f} ms | image age {:.1f} ms",
+      frame_seconds > 0 ? 1 / frame_seconds : 0, detection_ms, tracker_ms, read_age, image_age), 22, 73,
       cv::Scalar(255, 255, 255), 0.55);
     const auto & detect_profile = yolo.timing();
     if (detect_timing && detect_profile.valid) {
