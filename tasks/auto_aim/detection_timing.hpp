@@ -1,9 +1,11 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -27,6 +29,7 @@ struct DetectionTiming
 {
   bool valid = false;
   bool postprocess_only = false;
+  bool device_timing = false;
   uint64_t frame = 0;
   std::string model, backend;
   double total_ms = 0;
@@ -51,11 +54,12 @@ struct DetectionTiming
 };
 
 // Disabled by default. No clock queries or per-candidate timers on the disabled path.
-// Checkpoints accumulate disjoint wall-clock intervals; no device synchronization is added.
+// Each checkpoint accounts for a wall-clock interval that can include measured device stages.
 class DetectionProfiler
 {
 public:
   void enable(bool value) { enabled_ = value; active_ = false; timing_.valid = false; }
+  bool active() const { return active_; }
   const DetectionTiming & timing() const { return timing_; }
 
   void context(std::string model, std::string backend)
@@ -70,6 +74,7 @@ public:
     active_ = enabled_;
     if (!active_) return;
     timing_.postprocess_only = postprocess_only;
+    timing_.device_timing = false;
     timing_.stage_ms.fill(0);
     timing_.measured.fill(false);
     timing_.total_ms = 0;
@@ -82,10 +87,22 @@ public:
   {
     if (!active_) return;
     const auto now = Clock::now();
-    const auto index = static_cast<std::size_t>(stage);
-    timing_.stage_ms[index] += std::chrono::duration<double, std::milli>(now - checkpoint_).count();
-    timing_.measured[index] = true;
+    add(stage, std::chrono::duration<double, std::milli>(now - checkpoint_).count());
     checkpoint_ = now;
+  }
+
+  void mark_device(std::initializer_list<std::pair<DetectStage, double>> stages)
+  {
+    if (!active_) return;
+    const auto now = Clock::now();
+    double remaining_ms = std::chrono::duration<double, std::milli>(now - checkpoint_).count();
+    for (const auto & [stage, ms] : stages) {
+      add(stage, ms);
+      remaining_ms -= ms;
+    }
+    add(DetectStage::other, std::max(0.0, remaining_ms));
+    checkpoint_ = now;
+    timing_.device_timing = true;
   }
 
   void candidates(int raw, int scored, int nms)
@@ -100,9 +117,7 @@ public:
   {
     if (!active_) return;
     const auto now = Clock::now();
-    const auto other = static_cast<std::size_t>(DetectStage::other);
-    timing_.stage_ms[other] += std::chrono::duration<double, std::milli>(now - checkpoint_).count();
-    timing_.measured[other] = true;
+    add(DetectStage::other, std::chrono::duration<double, std::milli>(now - checkpoint_).count());
     timing_.total_ms = std::chrono::duration<double, std::milli>(now - start_).count();
     timing_.armors = static_cast<int>(armors);
     timing_.valid = true;
@@ -110,6 +125,13 @@ public:
   }
 
 private:
+  void add(DetectStage stage, double ms)
+  {
+    const auto index = static_cast<std::size_t>(stage);
+    timing_.stage_ms[index] += ms;
+    timing_.measured[index] = true;
+  }
+
   using Clock = std::chrono::steady_clock;
   bool enabled_ = false, active_ = false;
   DetectionTiming timing_;

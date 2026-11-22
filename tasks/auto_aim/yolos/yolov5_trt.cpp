@@ -61,6 +61,13 @@ void check_cuda(cudaError_t status, const char * what)
   }
 }
 
+double event_ms(cudaEvent_t start, cudaEvent_t end)
+{
+  float ms = 0;
+  check_cuda(cudaEventElapsedTime(&ms, start, end), "cudaEventElapsedTime");
+  return ms;
+}
+
 std::vector<char> read_file(const std::string & path)
 {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -136,6 +143,11 @@ void YOLOV5TRT::release()
     cudaStreamSynchronize(stream_);
     cudaStreamDestroy(stream_);
     stream_ = nullptr;
+  }
+  for (auto & event : timing_events_) {
+    if (!event) continue;
+    cudaEventDestroy(event);
+    event = nullptr;
   }
   if (input_host_) {
     cudaFreeHost(input_host_);
@@ -364,18 +376,43 @@ std::list<Armor> YOLOV5TRT::detect(const cv::Mat & raw_img, int frame_count)
   pack_input(input);
   profiler_.mark(DetectStage::pack);
 
-  check_cuda(
-    cudaMemcpyAsync(input_device_, input_host_, input_bytes_, cudaMemcpyHostToDevice, stream_),
-    "cudaMemcpyAsync(input)");
-  profiler_.mark(DetectStage::bind);
+  const bool timed = profiler_.active();
+  const auto & [upload_start, infer_start, download_start, download_end] = timing_events_;
+  if (timed) {
+    for (auto & event : timing_events_) {
+      if (!event) check_cuda(cudaEventCreate(&event), "cudaEventCreate");
+    }
+  }
 
-  enqueue();
-  profiler_.mark(DetectStage::forward);
+  try {
+    if (timed) check_cuda(cudaEventRecord(upload_start, stream_), "cudaEventRecord(upload start)");
+    check_cuda(
+      cudaMemcpyAsync(input_device_, input_host_, input_bytes_, cudaMemcpyHostToDevice, stream_),
+      "cudaMemcpyAsync(input)");
+    if (timed) check_cuda(cudaEventRecord(infer_start, stream_), "cudaEventRecord(infer start)");
 
-  check_cuda(
-    cudaMemcpyAsync(output_host_, output_device_, output_bytes_, cudaMemcpyDeviceToHost, stream_),
-    "cudaMemcpyAsync(output)");
-  check_cuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
+    enqueue();
+
+    if (timed)
+      check_cuda(cudaEventRecord(download_start, stream_), "cudaEventRecord(download start)");
+    check_cuda(
+      cudaMemcpyAsync(output_host_, output_device_, output_bytes_, cudaMemcpyDeviceToHost, stream_),
+      "cudaMemcpyAsync(output)");
+    if (timed) check_cuda(cudaEventRecord(download_end, stream_), "cudaEventRecord(download end)");
+    check_cuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
+  } catch (...) {
+    // Drain queued work before a later detect() can reuse the pinned buffers.
+    cudaStreamSynchronize(stream_);
+    throw;
+  }
+
+  if (timed) {
+    profiler_.mark_device({
+      {DetectStage::bind, event_ms(upload_start, infer_start)},
+      {DetectStage::forward, event_ms(infer_start, download_start)},
+      {DetectStage::output, event_ms(download_start, download_end)},
+    });
+  }
 
   auto output = fetch_output();
   profiler_.mark(DetectStage::output);

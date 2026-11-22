@@ -97,6 +97,7 @@ struct PlanView
   Clock::time_point source_time{};
   Clock::time_point computed{};
   double solve_ms = 0;
+  bool tx_fire_request = false;
   std::string status = "Waiting for live image and pose";
   std::string control_status = "RX ONLY - no serial TX";
 };
@@ -180,9 +181,9 @@ private:
       output.control_status = "TX STOP: no valid MPC command";
     else {
       tx = output.plan;
-      output.control_status = "TX FOLLOW - FIRE DISABLED";
+      output.control_status = "TX FOLLOW";
     }
-    // Fire is a literal false on every path, irrespective of Plan::fire or auto_fire.
+    output.tx_fire_request = tx.control && tx.fire;
     control_gimbal_->send(
       tx.control, tx.fire, tx.yaw, tx.yaw_vel, tx.yaw_acc, tx.pitch, tx.pitch_vel, tx.pitch_acc);
   }
@@ -577,6 +578,8 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
     }
     text(canvas, "Blue detection | Green track | Yellow aim prediction | Magenta MPC / command", 18, 795,
       foreground, 0.53);
+    text(canvas, fmt::format("TX fire request: {}", view.tx_fire_request ? "YES" : "NO"), 18, 768,
+      view.tx_fire_request ? command_color : muted, 0.58);
     text(canvas, fmt::format("Feedback: {} | matched pose: {} | mode: {}", feedback ? "LIVE" : "MISSING",
       pose_valid ? "YES" : "NO", feedback ? gimbal.str(feedback->mode) : "N/A"), 990, 58,
       pose_valid ? tracked_color : reference_color, 0.52);

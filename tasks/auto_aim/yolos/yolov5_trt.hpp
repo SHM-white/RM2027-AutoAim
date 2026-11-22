@@ -1,6 +1,7 @@
 #ifndef AUTO_AIM__YOLOV5_TRT_HPP
 #define AUTO_AIM__YOLOV5_TRT_HPP
 
+#include <array>
 #include <list>
 #include <memory>
 #include <string>
@@ -103,6 +104,7 @@ private:
   int output_rows_ = 0, output_cols_ = 0;
 
   cudaStream_t stream_ = nullptr;
+  std::array<cudaEvent_t, 4> timing_events_{};
   void * input_host_ = nullptr;
   void * output_host_ = nullptr;
   void * input_device_ = nullptr;

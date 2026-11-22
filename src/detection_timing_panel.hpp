@@ -118,7 +118,9 @@ private:
     text(image, fmt::format("Frame {} | raw {} -> score {} -> NMS {} -> armors {} | rolling {} frames",
       current.frame, current.raw_candidates, current.score_candidates, current.nms_candidates,
       current.armors, history_.size()), 18, 83);
-    text(image, "Wall-clock stages: no forced CUDA synchronization; backend label shows the requested device.",
+    text(image, current.device_timing
+      ? "TensorRT transfers and inference use CUDA events. Total uses wall-clock time."
+      : "Stages use wall-clock time. The backend label shows the requested device.",
       18, 109, muted, 0.45);
     text(image, "Stage", 18, 143, muted);
     text(image, "Last", 352, 143, muted);
@@ -140,7 +142,9 @@ private:
       const int y = 170 + static_cast<int>(i) * 25;
       const bool executed = current.measured[i];
       const auto color = i == static_cast<std::size_t>(DetectStage::forward) ? accent : cv::Scalar(225, 228, 235);
-      text(image, auto_aim::detect_stage_names[i], 18, y, executed ? color : muted, 0.45);
+      const auto name = current.device_timing && i == static_cast<std::size_t>(DetectStage::bind)
+        ? "Input upload (H2D)" : auto_aim::detect_stage_names[i];
+      text(image, name, 18, y, executed ? color : muted, 0.45);
       text(image, number(current.stage_ms[i], executed), 316, y, color);
       text(image, number(stages[i].mean, stages[i].valid), 430, y);
       text(image, number(stages[i].p95, stages[i].valid), 544, y);
@@ -160,7 +164,9 @@ private:
     text(image, fmt::format("Pre {:.3f} | forward {:.3f} | post {:.3f} | other {:.3f} ms",
       current.preprocessing_ms(), current.ms(DetectStage::forward), current.postprocessing_ms(),
       current.ms(DetectStage::other)), 18, 654, accent, 0.53);
-    text(image, "forward() may include transfers, synchronization, conversions and CPU fallback. It is not GPU kernel time.",
+    text(image, current.device_timing
+      ? "Output time includes the device-to-host copy and host output preparation."
+      : "Forward time may include transfers, synchronization, conversions and CPU fallback.",
       18, 682, muted, 0.43);
     text(image, "-- means this stage was not executed. Stage statistics use only frames that executed that stage.",
       18, 708, muted, 0.43);
