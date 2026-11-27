@@ -39,8 +39,11 @@ std::list<Target> Tracker::track(
     tools::logger()->warn("[Tracker] Large dt: {:.3f}s", dt);
     state_ = "lost";
   }
-  // 过滤掉非我方装甲板
-  armors.remove_if([&](const auto_aim::Armor & a) { return a.color != enemy_color_; });
+  // 过滤掉非我方装甲板；可选保留灯条未亮（extinguish）的装甲板用于测试与预测
+  armors.remove_if([&](const auto_aim::Armor & a) {
+    if (a.color == enemy_color_) return false;
+    return !(allow_unlit_ && a.color == Color::extinguish);
+  });
 
   // 过滤前哨站顶部装甲板
   // armors.remove_if([this](const auto_aim::Armor & a) {

@@ -25,6 +25,7 @@
 #include "tasks/auto_aim/yolo.hpp"
 #include "tools/exiter.hpp"
 #include "tools/logger.hpp"
+#include "tools/recorder.hpp"
 #include "detection_timing_panel.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -34,7 +35,11 @@ const std::string keys =
   "{help h usage ? |                     | 输出命令行参数说明}"
   "{@config-path   | configs/sentry.yaml | yaml 配置文件路径 }"
   "{enable-control | true                | 开启云台跟随，默认开启，始终不开火 }"
-  "{detect-timing  | true                | 显示 detect 分段耗时及最近 60 帧统计 }";
+  "{detect-timing  | true                | 显示 detect 分段耗时及最近 60 帧统计 }"
+  "{headless       | false               | 无头模式：不创建任何窗口，终端约每秒刷新一次帧率 }"
+  "{allow-unlit    | false               | 允许灯条未亮（extinguish）的装甲板参与跟踪、预测与瞄准 }"
+  "{record         | false               | 保存视频与对应云台四元数到 records/（仅记录云台姿态有效的帧）}"
+  "{record-fps     | 30                  | 录像帧率上限，同时作为保存视频的帧率 }";
 
 namespace
 {
@@ -467,7 +472,8 @@ void draw_directions(cv::Mat & canvas, const std::optional<Eigen::Quaterniond> &
   text(canvas, control_status, 990, 986, command_color, 0.5);
 }
 
-int run(const std::string & config_path, bool enable_control, bool detect_timing)
+int run(const std::string & config_path, bool enable_control, bool detect_timing, bool headless,
+        bool allow_unlit, bool record, double record_fps)
 {
   const auto yaml = YAML::LoadFile(config_path);
   const double default_speed = yaml["default_bullet_speed"].as<double>();
@@ -481,26 +487,39 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
     ? io::CameraFramePolicy::keep_queued : io::CameraFramePolicy::keep_latest);
   auto_aim::YOLO yolo(config_path, false);
   yolo.set_timing_enabled(detect_timing);
-  DetectionTimingPanel timing_panel(detect_timing);
+  DetectionTimingPanel timing_panel(detect_timing && !headless);
   auto_aim::Solver solver(config_path);
   auto tracker = std::make_unique<auto_aim::Tracker>(config_path, solver);
+  tracker->set_allow_unlit(allow_unlit);
   PlanningWorker worker(config_path, enable_control ? &gimbal : nullptr);
-  tools::logger()->info("自瞄实机可视化：{}", enable_control
-    ? "已启用云台跟随，开火位始终关闭" : "仅接收串口反馈，不发送任何控制/开火帧");
+  std::optional<tools::Recorder> recorder;
+  if (record) {
+    recorder.emplace(record_fps);
+    tools::logger()->info("录像已开启：records/ 下保存 .avi 与逐帧云台四元数 .txt，帧率上限 {} Hz",
+      record_fps);
+  }
+  tools::logger()->info("灯条未亮（extinguish）的装甲板：{}",
+    allow_unlit ? "允许跟踪 / 预测 / 瞄准" : "仍按敌方颜色过滤");
+  tools::logger()->info("自瞄实机可视化：{}", headless ? "无头模式，不创建窗口，终端约每秒刷新帧率"
+    : (enable_control ? "已启用云台跟随，开火位始终关闭" : "仅接收串口反馈，不发送任何控制/开火帧"));
   tools::logger()->info("弹速反馈不可用时读取配置默认值 {} m/s", default_speed);
-  if (detect_timing)
+  if (detect_timing && !headless)
     tools::logger()->info("detect 分段计时已开启：T 显示/隐藏计时窗口，R 清除最近 60 帧统计");
 
   const std::string window = enable_control ? "Auto aim MPC - FOLLOW / NO FIRE" : "Auto aim MPC - RX ONLY";
-  cv::namedWindow(window, cv::WINDOW_NORMAL);
-  cv::resizeWindow(window, 1280, 800);
+  if (!headless) {
+    cv::namedWindow(window, cv::WINDOW_NORMAL);
+    cv::resizeWindow(window, 1280, 800);
+  }
   const cv::Size canvas_size(1600, 1000);
   const cv::Scalar canvas_background(24, 25, 30);
   cv::Mat preview_canvas;
-  if (!enable_control) preview_canvas.create(canvas_size, CV_8UC3);
+  if (!headless && !enable_control) preview_canvas.create(canvas_size, CV_8UC3);
   cv::Mat image;
   Clock::time_point image_time;
   int frame_count = 0;
+  int fps_frames = 0;
+  auto fps_window_start = Clock::now();
   bool had_pose = false;
   bool window_query_enabled = true;
   bool window_observed = false;
@@ -515,6 +534,7 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
     const auto image_q = gimbal.try_q(image_time);
     const auto feedback = gimbal.feedback();
     const bool pose_valid = image_q.has_value() && feedback.has_value();
+    if (recorder && pose_valid && image_q) recorder->record(image, *image_q, image_time);
     const auto detection_start = Clock::now();
     const auto detections = yolo.detect(image, frame_count++);
     const auto tracking_start = Clock::now();
@@ -537,6 +557,7 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
       }
     } else if (had_pose) {
       tracker = std::make_unique<auto_aim::Tracker>(config_path, solver);
+      tracker->set_allow_unlit(allow_unlit);
     }
     had_pose = pose_valid;
     const double board_speed = feedback ? feedback->state.bullet_speed : 0;
@@ -560,6 +581,25 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
     }
     if (view.plan.control && view.trace)
       command_q = from_ypr(view.plan.yaw, view.plan.pitch);
+
+    if (headless) {
+      ++fps_frames;
+      const auto fps_now = Clock::now();
+      const double elapsed = std::chrono::duration<double>(fps_now - fps_window_start).count();
+      if (elapsed >= 1.0) {
+        const double detection_ms = std::chrono::duration<double, std::milli>(
+          tracking_start - detection_start).count();
+        const double tracker_ms = std::chrono::duration<double, std::milli>(
+          tracking_finish - tracking_start).count();
+        const double image_age = std::chrono::duration<double, std::milli>(
+          fps_now - image_time).count();
+        tools::logger()->info("FPS {:.1f} | detect {:.1f} ms | track {:.1f} ms | image age {:.1f} ms",
+          fps_frames / elapsed, detection_ms, tracker_ms, image_age);
+        fps_frames = 0;
+        fps_window_start = fps_now;
+      }
+      continue;
+    }
 
     cv::Mat canvas = enable_control ? cv::Mat(canvas_size, CV_8UC3) : preview_canvas;
     canvas.setTo(canvas_background);
@@ -692,7 +732,7 @@ int run(const std::string & config_path, bool enable_control, bool detect_timing
   worker.stop();
   timing_panel.close();
   tools::logger()->info("自瞄可视化正常退出：{}，已处理 {} 帧", exit_reason, frame_count);
-  if (!window_closed) cv::destroyWindow(window);
+  if (!headless && !window_closed) cv::destroyWindow(window);
   return 0;
 }
 }  // namespace
@@ -707,12 +747,20 @@ int main(int argc, char * argv[])
   const auto config_path = cli.get<std::string>(0);
   const auto enable_control = cli.get<bool>("enable-control");
   const auto detect_timing = cli.get<bool>("detect-timing");
+  const auto headless = cli.get<bool>("headless");
+  const auto allow_unlit = cli.get<bool>("allow-unlit");
+  const auto record = cli.get<bool>("record");
+  const auto record_fps = cli.get<double>("record-fps");
   if (!cli.check()) {
     cli.printErrors();
     return 1;
   }
+  if (!std::isfinite(record_fps) || record_fps <= 0) {
+    tools::logger()->error("record-fps 必须为正数，当前为 {}", record_fps);
+    return 1;
+  }
   try {
-    return run(config_path, enable_control, detect_timing);
+    return run(config_path, enable_control, detect_timing, headless, allow_unlit, record, record_fps);
   } catch (const std::exception & e) {
     tools::logger()->error("自瞄可视化退出：{}", e.what());
     return 1;

@@ -9,6 +9,10 @@ add_executable(auto_aim_debug_mpc auto_aim_debug_mpc.cpp)
 target_link_libraries(auto_aim_debug_mpc PRIVATE
   ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim tools io)
 
+add_executable(auto_aim_debug auto_aim_debug.cpp)
+target_link_libraries(auto_aim_debug PRIVATE
+  ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim tools io)
+
 add_executable(auto_buff_debug_mpc auto_buff_debug_mpc.cpp)
 target_link_libraries(auto_buff_debug_mpc PRIVATE
   ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_buff tools io)

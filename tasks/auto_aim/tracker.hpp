@@ -21,6 +21,9 @@ public:
 
   std::string state() const;
 
+  // Accept armors with unlit light bars (Color::extinguish) in addition to the enemy color.
+  void set_allow_unlit(bool allow) { allow_unlit_ = allow; }
+
   std::list<Target> track(
     std::list<Armor> & armors, std::chrono::steady_clock::time_point t,
     bool use_enemy_color = true);
@@ -42,6 +45,7 @@ private:
   Target target_;
   std::chrono::steady_clock::time_point last_timestamp_;
   ArmorPriority omni_target_priority_;
+  bool allow_unlit_ = false;
 
   void state_machine(bool found);
 

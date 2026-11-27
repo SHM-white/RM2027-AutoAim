@@ -64,12 +64,12 @@ outpost_max_temp_lost_count: 75
 
 #####-----aimer参数-----#####
 yaw_offset: -2.3 # degree
-pitch_offset: 1    # degree
+pitch_offset: 0    # degree
 comming_angle: 55 # degree
 leaving_angle: 20 # degree
 decision_speed: 7 # rad/s
 high_speed_delay_time: 0.0 # s
-low_speed_delay_time: 0.0 # s
+low_speed_delay_time: 0.3 # s
 
 #####-----shooter参数-----#####
 first_tolerance: 3 # degree
@@ -105,12 +105,12 @@ pitch_kd: 0
 
 #####-----planner参数-----#####
 # MPC 弹速反馈无效时读取此值，m/s；沿用原规划器的 22 m/s。
-default_bullet_speed: 22.0
+default_bullet_speed: 15.0
 fire_thresh: 0.0035
-max_yaw_acc: 50
+max_yaw_acc: 20
 Q_yaw: [9e6, 0]
 R_yaw: [1]
-max_pitch_acc: 100
+max_pitch_acc: 20
 Q_pitch: [9e6, 0]
 R_pitch: [1]
 
